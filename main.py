@@ -1,12 +1,10 @@
-# main.py - FINAL DUAL AI ENGINE (Clinical + Malaria Blood Smear)
-# For Render.com deployment — lightweight, fast, no version issues
+# main.py - OPTIMIZED DUAL AI ENGINE (Clinical + Malaria) for Render.com
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 import joblib
-import tensorflow as tf
+import numpy as np
 from PIL import Image
 import io
-import numpy as np
 import os
 
 # Initialize FastAPI app
@@ -16,7 +14,7 @@ app = FastAPI(
     version="2.0"
 )
 
-# Allow Flutter app and others to connect
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,21 +26,35 @@ app.add_middleware(
 # Load models at startup
 print("Loading AI models...")
 
-# 1. Clinical Model (your real ABSUTH-trained Random Forest)
+# 1. Clinical Model (ABSUTH-trained Random Forest)
 clinical_model = joblib.load("models/ABSUTH_early_detection_model.pkl")
 
-# 2. Malaria CNN (blood smear parasite detection)
-malaria_model = tf.keras.models.load_model("models/malaria_cnn.h5")
+# 2. Malaria CNN (TensorFlow Lite - lightweight!)
+try:
+    import tensorflow as tf
+    malaria_interpreter = tf.lite.Interpreter(model_path="models/malaria_cnn.tflite")
+    malaria_interpreter.allocate_tensors()
+    input_details = malaria_interpreter.get_input_details()
+    output_details = malaria_interpreter.get_output_details()
+    print("✅ Using TensorFlow Lite (optimized)")
+except ImportError:
+    # Fallback: Try tflite_runtime (smaller package)
+    import tflite_runtime.interpreter as tflite
+    malaria_interpreter = tflite.Interpreter(model_path="models/malaria_cnn.tflite")
+    malaria_interpreter.allocate_tensors()
+    input_details = malaria_interpreter.get_input_details()
+    output_details = malaria_interpreter.get_output_details()
+    print("✅ Using tflite_runtime (ultra-lightweight)")
 
 print("Both models loaded successfully!")
 print("Clinical Model: ABSUTH Real Patient Records")
-print("Malaria CNN: Trained on 27,550 NIH blood smear images")
+print("Malaria CNN: Trained on 27,550 NIH blood smear images (TFLite)")
 
 # Preprocess image for CNN
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((128, 128))
-    img_array = np.array(img) / 255.0
+    img_array = np.array(img, dtype=np.float32) / 255.0
     return np.expand_dims(img_array, axis=0)
 
 # Health check
@@ -52,8 +64,9 @@ def home():
         "system": "ABSUTH Dual AI Engine",
         "status": "ACTIVE",
         "clinical_model": "Ready (Real ABSUTH Data)",
-        "malaria_cnn": "Ready (27,550 NIH Images)",
-        "endpoints": ["/predict", "/detect-malaria"]
+        "malaria_cnn": "Ready (27,550 NIH Images - TFLite)",
+        "endpoints": ["/predict", "/detect-malaria"],
+        "optimization": "TensorFlow Lite for fast deployment"
     }
 
 # 1. Clinical Risk Prediction (Age, Sex, Travel History)
@@ -81,13 +94,17 @@ def predict_clinical(
         "input_features": {"age": age, "sex": sex, "travel_history": travel_history}
     }
 
-# 2. Malaria Parasite Detection from Blood Smear Image
+# 2. Malaria Parasite Detection from Blood Smear Image (TFLite)
 @app.post("/detect-malaria")
 async def detect_malaria(file: UploadFile = File(..., description="Upload blood smear image")):
     contents = await file.read()
     img_array = preprocess_image(contents)
     
-    prediction = malaria_model.predict(img_array)[0][0]
+    # Run inference with TFLite
+    malaria_interpreter.set_tensor(input_details[0]['index'], img_array)
+    malaria_interpreter.invoke()
+    prediction = malaria_interpreter.get_tensor(output_details[0]['index'])[0][0]
+    
     probability = float(prediction)
     result = "Parasitized" if probability > 0.5 else "Uninfected"
     confidence = probability if result == "Parasitized" else 1 - probability
