@@ -1,127 +1,74 @@
-# main.py - OPTIMIZED DUAL AI ENGINE (Clinical + Malaria) for Render.com
+# main.py - FINAL DEPLOYABLE VERSION (No TensorFlow!)
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from imageai.Detection import ObjectDetection
 import joblib
-import numpy as np
-from PIL import Image
-import io
 import os
+import numpy as np
 
-# Initialize FastAPI app
 app = FastAPI(
     title="ABSUTH Dual AI Engine",
-    description="Clinical Risk Prediction (Real ABSUTH Data) + Malaria Parasite Detection (CNN)",
-    version="2.0"
+    description="Clinical Risk (Real ABSUTH Data) + Malaria Detection (Lightweight CNN)",
+    version="3.0"
 )
 
-# CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Load models at startup
-print("Loading AI models...")
+print("Loading models...")
 
-# 1. Clinical Model (ABSUTH-trained Random Forest)
+# 1. Clinical Model (your real ABSUTH data)
 clinical_model = joblib.load("models/ABSUTH_early_detection_model.pkl")
 
-# 2. Malaria CNN (TensorFlow Lite - lightweight!)
-try:
-    import tensorflow as tf
-    malaria_interpreter = tf.lite.Interpreter(model_path="models/malaria_cnn.tflite")
-    malaria_interpreter.allocate_tensors()
-    input_details = malaria_interpreter.get_input_details()
-    output_details = malaria_interpreter.get_output_details()
-    print("✅ Using TensorFlow Lite (optimized)")
-except ImportError:
-    # Fallback: Try tflite_runtime (smaller package)
-    import tflite_runtime.interpreter as tflite
-    malaria_interpreter = tflite.Interpreter(model_path="models/malaria_cnn.tflite")
-    malaria_interpreter.allocate_tensors()
-    input_details = malaria_interpreter.get_input_details()
-    output_details = malaria_interpreter.get_output_details()
-    print("✅ Using tflite_runtime (ultra-lightweight)")
+# 2. Lightweight Malaria Detector (NO TensorFlow!)
+detector = ObjectDetection()
+detector.setModelTypeAsYOLOv3()
+detector.setModelPath("models/yolo-malaria.h5")
+detector.loadModel()
 
-print("Both models loaded successfully!")
-print("Clinical Model: ABSUTH Real Patient Records")
-print("Malaria CNN: Trained on 27,550 NIH blood smear images (TFLite)")
+print("Both models loaded: Clinical + Malaria (YOLO)")
 
-# Preprocess image for CNN
-def preprocess_image(image_bytes):
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img = img.resize((128, 128))
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    return np.expand_dims(img_array, axis=0)
-
-# Health check
 @app.get("/")
 def home():
-    return {
-        "system": "ABSUTH Dual AI Engine",
-        "status": "ACTIVE",
-        "clinical_model": "Ready (Real ABSUTH Data)",
-        "malaria_cnn": "Ready (27,550 NIH Images - TFLite)",
-        "endpoints": ["/predict", "/detect-malaria"],
-        "optimization": "TensorFlow Lite for fast deployment"
-    }
+    return {"status": "LIVE", "clinical": "Ready", "malaria": "Ready (YOLO)"}
 
-# 1. Clinical Risk Prediction (Age, Sex, Travel History)
 @app.post("/predict")
-def predict_clinical(
-    age: int = Form(..., description="Patient age"),
-    sex: str = Form(..., description="M or F"),
-    travel_history: str = Form("No", description="Any recent travel?")
-):
+def predict_clinical(age: int = Form(...), sex: str = Form(...), travel_history: str = Form("No")):
     is_female = 1 if sex.strip().upper() in ["F", "FEMALE"] else 0
-    has_travel = 1 if any(x in travel_history.lower() for x in ["yes", "lagos", "abuja", "port", "travel", "endemic"]) else 0
-    
+    has_travel = 1 if any(x in travel_history.lower() for x in ["yes", "lagos", "abuja", "travel"]) else 0
     features = [[age, is_female, has_travel]]
     risk = clinical_model.predict(features)[0]
-    probability = clinical_model.predict_proba(features)[0][1]
-
+    prob = clinical_model.predict_proba(features)[0][1]
+    
     return {
-        "ai_prediction": {
-            "risk_level": "HIGH - Urgent Testing Required" if risk == 1 else "LOW - Monitor Symptoms",
-            "risk_probability": round(float(probability), 4),
-            "recommendation": "Refer for Malaria & Zika lab tests immediately" if risk == 1 
-                            else "Continue mosquito prevention and monitoring",
-            "model_source": "Random Forest trained on real ABSUTH patient records (2025)"
-        },
-        "input_features": {"age": age, "sex": sex, "travel_history": travel_history}
+        "risk_level": "HIGH - Urgent Testing" if risk == 1 else "LOW - Monitor",
+        "probability": round(float(prob), 4),
+        "model": "Trained on ABSUTH Real Records"
     }
 
-# 2. Malaria Parasite Detection from Blood Smear Image (TFLite)
 @app.post("/detect-malaria")
-async def detect_malaria(file: UploadFile = File(..., description="Upload blood smear image")):
+async def detect_malaria(file: UploadFile = File(...)):
     contents = await file.read()
-    img_array = preprocess_image(contents)
+    with open("temp_image.jpg", "wb") as f:
+        f.write(contents)
     
-    # Run inference with TFLite
-    malaria_interpreter.set_tensor(input_details[0]['index'], img_array)
-    malaria_interpreter.invoke()
-    prediction = malaria_interpreter.get_tensor(output_details[0]['index'])[0][0]
+    detections = detector.detectObjectsFromImage(
+        input_image="temp_image.jpg",
+        output_image_path="output.jpg",
+        minimum_percentage_probability=30
+    )
     
-    probability = float(prediction)
-    result = "Parasitized" if probability > 0.5 else "Uninfected"
-    confidence = probability if result == "Parasitized" else 1 - probability
-
+    parasites = [d for d in detections if d["name"] == "parasite"]
+    result = "Parasitized" if parasites else "Uninfected"
+    confidence = max([p["percentage_probability"] for p in parasites], default=0) / 100
+    
     return {
-        "malaria_detection": {
-            "result": result,
-            "confidence": round(confidence, 4),
-            "parasite_probability": round(probability, 4),
-            "recommendation": "URGENT: Start ACT treatment + Confirm with microscopy" if result == "Parasitized"
-                            else "No malaria parasites detected",
-            "model_source": "Convolutional Neural Network trained on NIH Malaria Dataset (27,550 images)"
-        },
-        "image_received": file.filename
+        "result": result,
+        "parasite_count": len(parasites),
+        "confidence": round(confidence, 4),
+        "recommendation": "URGENT: Start ACT" if result == "Parasitized" else "No parasites"
     }
 
-# Required for Render.com deployment
+# Required for Render
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
