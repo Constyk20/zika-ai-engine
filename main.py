@@ -1,4 +1,4 @@
-# main.py - DUAL AI WITH FIXED TFLite (Deploy Ready)
+# main.py - DUAL AI WITH COMPATIBLE TFLITE FROM GITHUB REPO (wanzinyazar)
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 import joblib
@@ -12,15 +12,19 @@ app = FastAPI(title="ABSUTH Dual AI", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 print("Loading models...")
+
+# Clinical Model (your real ABSUTH data)
 clinical_model = joblib.load("models/ABSUTH_early_detection_model.pkl")
 
-# Load your fixed TFLite model
+# Pre-trained TFLite Malaria Model (compatible ops, from GitHub repo)
 interpreter = tf.lite.Interpreter(model_path="models/malaria_lite.tflite")
 interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 print("Models loaded!")
+print("Clinical: ABSUTH Real Records")
+print("Malaria: TFLite from GitHub Repo (NIH Dataset, Offline-Ready)")
 
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -30,18 +34,24 @@ def preprocess_image(image_bytes):
 
 @app.get("/")
 def home():
-    return {"status": "LIVE", "clinical": "Ready", "malaria": "Ready"}
+    return {"status": "LIVE", "clinical": "Ready", "malaria_tflite": "Ready"}
 
 @app.post("/predict")
-def predict_clinical(age: int = Form(...), sex: str = Form(...), travel_history: str = Form("No")):
+def predict_clinical(
+    age: int = Form(...),
+    sex: str = Form(...),
+    travel_history: str = Form("No")
+):
     is_female = 1 if sex.strip().upper() in ["F", "FEMALE"] else 0
     has_travel = 1 if any(x in travel_history.lower() for x in ["yes", "lagos", "abuja"]) else 0
     features = [[age, is_female, has_travel]]
     risk = clinical_model.predict(features)[0]
     probability = clinical_model.predict_proba(features)[0][1]
     return {
-        "risk_level": "HIGH" if risk == 1 else "LOW",
-        "probability": round(float(probability), 4)
+        "risk_level": "HIGH - Urgent Testing Required" if risk == 1 else "LOW - Monitor Symptoms",
+        "risk_probability": round(float(probability), 4),
+        "recommendation": "Refer for Malaria & Zika lab tests immediately" if risk == 1 
+                        else "Continue mosquito prevention"
     }
 
 @app.post("/detect-malaria")
@@ -54,10 +64,17 @@ async def detect_malaria(file: UploadFile = File(...)):
     result = "Parasitized" if prediction > 0.5 else "Uninfected"
     confidence = prediction if result == "Parasitized" else 1 - prediction
     return {
-        "result": result,
-        "confidence": round(float(confidence), 4)
+        "malaria_detection": {
+            "result": result,
+            "confidence": round(float(confidence), 4),
+            "parasite_probability": round(float(prediction), 4),
+            "recommendation": "URGENT: Start ACT treatment + Confirm with microscopy" if result == "Parasitized"
+                            else "No malaria parasites detected"
+        },
+        "model_source": "Pre-trained TFLite CNN from GitHub Repo (wanzinyazar/Malaria_TFLite_Andriod_Version, NIH Dataset)"
     }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
